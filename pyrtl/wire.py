@@ -182,6 +182,8 @@ class WireVector(object):
         return self
 
     def _two_var_op(self, other, op):
+        #is called in each overloaded operator's function
+        #this function will
         from .corecircuits import as_wires, match_bitwidth
 
         # convert constants if necessary
@@ -514,15 +516,21 @@ class Input(WireVector):
     _code = 'I'
 
     def __init__(self, bitwidth=None, name='', block=None):
-        super(Input, self).__init__(bitwidth=bitwidth, name=name, block=block)
+        #super(Input, self).__init__(bitwidth=bitwidth, name=name, block=block) #syntax in Python 2.x
+        super().__init__(bitwidth=bitwidth, name=name, block=block)  #syntax in Python 3.x
+        self.is_assigned = False
 
-    def __ilshift__(self, _):
+    def __ilshift__(self, other):
+        self.is_assigned = True
+        other = self._prepare_for_assignment(other)
+        self._build(other)
+        return self
         """ This is an illegal op for Inputs. They cannot be assigned to in this way """
-        raise PyrtlError(
-            'Connection using <<= operator attempted on Input. '
-            'Inputs, such as "%s", cannot have values generated internally. '
-            "aka they can't have other wires driving it"
-            % str(self.name))
+        # raise PyrtlError(
+            # 'Connection using <<= operator attempted on Input. '
+            # 'Inputs, such as "%s", cannot have values generated internally. '
+            # "aka they can't have other wires driving it"
+            # % str(self.name))
 
     def __ior__(self, _):
         """ This is an illegal op for Inputs. They cannot be assigned to in this way """
@@ -541,8 +549,8 @@ class Output(WireVector):
     _code = 'O'
 
     def __init__(self, bitwidth=None, name='', block=None):
-        super(Output, self).__init__(bitwidth, name, block)
-
+        # super(Output, self).__init__(bitwidth, name, block) # syntax in Python 2.x
+        super().__init__(bitwidth, name, block)  # syntax in Python 3.x
 
 class Const(WireVector):
     """ A WireVector representation of a constant value
@@ -565,6 +573,7 @@ class Const(WireVector):
         Descriptions for all parameters not listed above can be found at
         py:method:: WireVector.__init__()
         """
+        self.signed = True if val < 0 else False
         self._validate_bitwidth(bitwidth)
         from .helperfuncs import infer_val_and_bitwidth
         num, bitwidth = infer_val_and_bitwidth(val, bitwidth)
