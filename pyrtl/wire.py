@@ -13,6 +13,7 @@ Types defined in this file include:
 from __future__ import print_function, unicode_literals
 
 import numbers
+from pyrtl.rtllib.multipliers import _one_cycle_mult
 import six
 import re
 
@@ -20,6 +21,8 @@ from . import core  # needed for _setting_keep_wirevector_call_stack
 
 from .pyrtlexceptions import PyrtlError, PyrtlInternalError
 from .core import working_block, LogicNet, _NameIndexer
+# write by zousheng 2021/5/27
+from .core import Block, current_block
 
 # ----------------------------------------------------------------
 #        ___  __  ___  __   __
@@ -103,14 +106,36 @@ class WireVector(object):
         """
         self._name = None
 
+        # write by zousheng 2021/5/24
+        # if name == '':
+        #     self.identified = False
+        # else:
+        self.identified = True
+
+        # WRITE BY ZOUSHENG 2021/7/2
+        self.is_default = False
+
         # used only to verify the one to one relationship of wires and blocks
         self._block = working_block(block)
-        self.name = next_tempvar_name(name)
+       
+        # write by zousheng 2021/6/1
+        self.id = self.name = next_tempvar_name(name)
+
+        # write by zousheng 2021/7/8
+        self.current_block = self._block
+
+        # write by zousheng 2021/7/27
+        self.reg_input = False
+
         self._validate_bitwidth(bitwidth)
 
         if core._setting_keep_wirevector_call_stack:
             import traceback
             self.init_call_stack = traceback.format_stack()
+
+        # write by zousheng 2021/5/21
+        self.args = tuple()  
+        self.op = ''  
 
     @property
     def name(self):
@@ -123,7 +148,9 @@ class WireVector(object):
         if not isinstance(value, six.string_types):
             raise PyrtlError('WireVector names must be strings')
         self._block.wirevector_by_name.pop(self._name, None)
-        self._name = value
+        # self._name = value
+        # write by zousheng 2021/5/24
+        self._name = self._block.name + '_' + value
         self._block.add_wirevector(self)
 
     def __hash__(self):
@@ -147,25 +174,110 @@ class WireVector(object):
     def _build(self, other):
         # Actually create and add wirevector to logic block
         # This might be called immediately from ilshift, or delayed from conditional assignment
-        net = LogicNet(
-            op='w',
-            op_param=None,
-            args=(other,),
-            dests=(self,))
-        working_block().add_net(net)
+
+        # 2021/11/8
+        if self._block != other._block:
+            for logicnet in other.current_block.logic:
+                for wv in logicnet.args + logicnet.dests:
+                    current_block().add_wirevector(wv)
+                current_block().add_net(logicnet)
+
+            for logicnet in self.current_block.logic:
+                for wv in logicnet.args + logicnet.dests:
+                    current_block().add_wirevector(wv)
+                current_block().add_net(logicnet)
+            
+            if isinstance(other, Output):
+                other.assign = True
+
+            current_block().add_net(LogicNet(
+                op = 'w',
+                op_param = None,
+                args = (other, ),
+                dests = (self, )
+                    ))
+        else:
+            net = LogicNet(
+                op='w',
+                op_param=None,
+                args=(other,),
+                dests=(self,))
+            # working_block().add_net(net)
+            # self._block.add_net(net)
+            current_block().add_net(net)
 
     def _prepare_for_assignment(self, rhs):
         # Convert right-hand-side to wires and propagate bitwidth if necessary
         from .corecircuits import as_wires
-        rhs = as_wires(rhs, bitwidth=self.bitwidth)
+        # rhs = as_wires(rhs, bitwidth=self.bitwidth, block=self._block)   # 2021/11/8 兼容input_circuit传入信号
+        rhs = as_wires(rhs, bitwidth=self.bitwidth, block=current_block())
         if self.bitwidth is None:
             self.bitwidth = rhs.bitwidth
         return rhs
 
     def __ilshift__(self, other):
-        """ Wire assignment operator (assign other to self). """
         other = self._prepare_for_assignment(other)
-        self._build(other)
+        if isinstance(other, Block):
+            # self._block = self._block + other    # 如果直接用"+", 可能把我用融合的两个电路融合起来
+            
+            # other.add_name()
+            # write by zousheng 2021/5/29
+            # 将other中的wirevector_set和logic合并到_block中
+            for logicnet in other.logic:
+                self._block.logic.add(logicnet)
+
+            for wv in other.wirevector_set:
+                self._block.add_wirevector(wv)
+
+            # 添加连接关系————操作符为'w'的logicnet
+            for i in other.wirevector_set:
+                if i.id == self.name.id and i.identified:
+                    if isinstance(i, Output):
+                        i.assign = True
+                    self._block.logic.add(LogicNet(
+                        op = 'w',
+                        op_param = None,
+                        args = (i, ),
+                        dests = (self, )
+                    ))
+        elif self._block != other._block:
+            # write by zousheng 2021/5/29 change on 2021/6/29
+            # 将other中的wirevector_set和logic合并到_block中
+            # if other._block != current_block() and self._block != current_block():
+            for logicnet in other.current_block.logic:
+                # self._block.logic.add(logicnet)
+                for wv in logicnet.args + logicnet.dests:
+                    current_block().add_wirevector(wv)
+                current_block().add_net(logicnet)
+
+            for logicnet in self.current_block.logic:
+                for wv in logicnet.args + logicnet.dests:
+                    current_block().add_wirevector(wv)
+                current_block().add_net(logicnet)
+            
+            # for wv in other._block.wirevector_set:
+            #     # self._block.add_wirevector(wv)
+            #     current_block().add_wirevector(wv)
+            # # write by zousheng 2021/6/29
+            # for wv in self._block.wirevector_set:
+            #     current_block().add_wirevector(wv)
+            if isinstance(other, Output):
+                other.assign = True
+            # self._block.logic.add(LogicNet(
+            #     op = 'w',
+            #     op_param = None,
+            #     args = (other, ),
+            #     dests = (self, )
+            #         ))
+            current_block().add_net(LogicNet(
+                op = 'w',
+                op_param = None,
+                args = (other, ),
+                dests = (self, )
+                    ))
+        else:
+            """ Wire assignment operator (assign other to self). """
+            self._build(other)
         return self
 
     def __ior__(self, other):
@@ -187,7 +299,8 @@ class WireVector(object):
         from .corecircuits import as_wires, match_bitwidth
 
         # convert constants if necessary
-        a, b = self, as_wires(other)
+        # a, b = self, as_wires(other, block=self._block)
+        a, b = self, as_wires(other, block=current_block())
         a, b = match_bitwidth(a, b)
         resultlen = len(a)  # both are the same length now
 
@@ -199,13 +312,16 @@ class WireVector(object):
         elif op in '<>=':
             resultlen = 1
 
-        s = WireVector(bitwidth=resultlen)
+        # s = WireVector(bitwidth=resultlen, block=self._block)
+        s = WireVector(bitwidth=resultlen, block=current_block())
         net = LogicNet(
             op=op,
             op_param=None,
             args=(a, b),
             dests=(s,))
-        working_block().add_net(net)
+        # working_block().add_net(net)
+        # self._block.add_net(net)
+        current_block().add_net(net)
         return s
 
     def __bool__(self):
@@ -283,7 +399,8 @@ class WireVector(object):
 
     def __rsub__(self, other):
         from .corecircuits import as_wires
-        other = as_wires(other)  # '-' op is not symmetric
+        # other = as_wires(other, block=self._block)  # '-' op is not symmetric
+        other = as_wires(other, block=current_block())
         return other._two_var_op(self, '-')
 
     def __isub__(self, other):
@@ -348,13 +465,16 @@ class WireVector(object):
         """ Creates LogicNets that inverts a wire
         :return Wirevector: a result wire for the operation
         """
-        outwire = WireVector(bitwidth=len(self))
+        # outwire = WireVector(bitwidth=len(self), block=self._block)
+        outwire = WireVector(bitwidth=len(self), block=current_block())
         net = LogicNet(
             op='~',
             op_param=None,
             args=(self,),
             dests=(outwire,))
-        working_block().add_net(net)
+        # working_block().add_net(net)
+        # self._block.add_net(net)
+        current_block().add_net(net)
         return outwire
 
     def __getitem__(self, item):
@@ -370,13 +490,16 @@ class WireVector(object):
             selectednums = tuple(allindex[item])
         if not selectednums:
             raise PyrtlError('selection %s must have at least select one wire' % str(item))
-        outwire = WireVector(bitwidth=len(selectednums))
+        # outwire = WireVector(bitwidth=len(selectednums), block=self._block)
+        outwire = WireVector(bitwidth=len(selectednums), block=current_block())
         net = LogicNet(
             op='s',
             op_param=selectednums,
             args=(self,),
             dests=(outwire,))
-        working_block().add_net(net)
+        # working_block().add_net(net)
+        # self._block.add_net(net)
+        current_block().add_net(net)
         return outwire
 
     def __lshift__(self, other):
@@ -494,15 +617,19 @@ class WireVector(object):
         else:
             from .corecircuits import concat
             if isinstance(extbit, int):
-                extbit = Const(extbit, bitwidth=1)
-            extvector = WireVector(bitwidth=numext)
+                extbit = Const(extbit, bitwidth=1, block=self._block)
+                extbit = Const(extbit, bitwidth=1, block=current_block())
+            # extvector = WireVector(bitwidth=numext, block=self._block)
+            extvector = WireVector(bitwidth=numext, block=current_block())
             net = LogicNet(
                 op='s',
                 op_param=(0,)*numext,
                 args=(extbit,),
                 dests=(extvector,))
-            working_block().add_net(net)
-            return concat(extvector, self)
+            # working_block().add_net(net)
+            # self._block.add_net(net)
+            current_block().add_net(net)
+            return concat(extvector, self, block=current_block())
 
 
 # -----------------------------------------------------------------------
@@ -521,9 +648,66 @@ class Input(WireVector):
         self.is_assigned = False
 
     def __ilshift__(self, other):
-        self.is_assigned = True
         other = self._prepare_for_assignment(other)
-        self._build(other)
+        if isinstance(other, Block):
+            self.is_assigned = True
+            # write by zousheng 2021/5/29
+            # 将other中的wirevector_set和logic合并到_block中
+            # other.add_name()
+            for logicnet in other.logic:
+                self.current_block.logic.add(logicnet)
+
+            for wv in other.wirevector_set:
+                self.current_block.add_wirevector(wv)
+
+            # 添加连接关系————操作符为'w'的logicnet
+            for i in other.wirevector_set:
+                if i.id == self.name.id and i.identified:
+                    self._block.logic.add(LogicNet(
+                        op = 'w',
+                        op_param = None,
+                        args = (i, ),
+                        dests = (self, )
+                    ))
+        elif self._block != other._block:
+            self.is_assigned = True
+            # other._block.add_name()
+            # write by zousheng 2021/5/29 change on 2021/6/29
+            # 将other中的wirevector_set和logic合并到_block中 修改为合并到current_block中
+            for logicnet in other.current_block.logic:
+                # self._block.logic.add(logicnet)
+                for wv in logicnet.args + logicnet.dests:
+                    current_block().add_wirevector(wv)
+                current_block().add_net(logicnet)
+            
+            for logicnet in self.current_block.logic:
+                for wv in logicnet.args + logicnet.dests:
+                    current_block().add_wirevector(wv)
+                current_block().add_net(logicnet)
+            
+            # for wv in other._block.wirevector_set:
+            #     # self._block.add_wirevector(wv)
+            #     current_block().add_wirevector(wv)
+            # # write by zousheng 2021/6/29
+            # for wv in self._block.wirevector_set:
+            #     current_block().add_wirevector(wv)
+            if isinstance(other, Output):
+                other.assign = True
+            # self._block.logic.add(LogicNet(
+            #     op = 'w',
+            #     op_param = None,
+            #     args = (other, ),
+            #     dests = (self, )
+            #         ))
+            current_block().add_net(LogicNet(
+                op = 'w',
+                op_param = None,
+                args = (other, ),
+                dests = (self, )
+                    ))
+        else:
+            self.is_assigned = True
+            self._build(other)
         return self
         """ This is an illegal op for Inputs. They cannot be assigned to in this way """
         # raise PyrtlError(
@@ -551,7 +735,14 @@ class Output(WireVector):
     def __init__(self, bitwidth=None, name='', block=None):
         # super(Output, self).__init__(bitwidth, name, block) # syntax in Python 2.x
         super().__init__(bitwidth, name, block)  # syntax in Python 3.x
+        self.assign = False
 
+class Inout(WireVector):
+    _code = 'IO'
+
+    def __init__(self, bitwidth=None, name='', block=None):
+        super().__init__(bitwidth, name, block)
+        
 class Const(WireVector):
     """ A WireVector representation of a constant value
 
@@ -573,10 +764,10 @@ class Const(WireVector):
         Descriptions for all parameters not listed above can be found at
         py:method:: WireVector.__init__()
         """
-        self.signed = True if val < 0 else False
+        
         self._validate_bitwidth(bitwidth)
         from .helperfuncs import infer_val_and_bitwidth
-        num, bitwidth = infer_val_and_bitwidth(val, bitwidth)
+        num, bitwidth, self.signed = infer_val_and_bitwidth(val, bitwidth)
 
         if num < 0:
             raise PyrtlInternalError(
@@ -587,7 +778,6 @@ class Const(WireVector):
                 % (str(num), bitwidth))
 
         name = _constIndexer.make_valid_string() + '_' + str(val)
-
         super(Const, self).__init__(bitwidth=bitwidth, name=name, block=block)
         # add the member "val" to track the value of the constant
         self.val = num
@@ -659,8 +849,9 @@ class Register(WireVector):
             self.rhs = rhs
             self.is_conditional = is_conditional
 
-    def __init__(self, bitwidth, name='', block=None):
+    def __init__(self, bitwidth, name='', initial_value=None, block=None):
         super(Register, self).__init__(bitwidth=bitwidth, name=name, block=block)
+        self.initial_value = initial_value
         self.reg_in = None  # wire vector setting self.next
 
     @property
@@ -679,14 +870,16 @@ class Register(WireVector):
 
     def _next_ilshift(self, other):
         from .corecircuits import as_wires
-        other = as_wires(other, bitwidth=self.bitwidth)
+        # other = as_wires(other, bitwidth=self.bitwidth, block=self._block)
+        other = as_wires(other, bitwidth=self.bitwidth, block=current_block())
         if self.bitwidth is None:
             self.bitwidth = other.bitwidth
         return Register._NextSetter(other, is_conditional=False)
 
     def _next_ior(self, other):
         from .corecircuits import as_wires
-        other = as_wires(other, bitwidth=self.bitwidth)
+        # other = as_wires(other, bitwidth=self.bitwidth, block=self._block)
+        other = as_wires(other, bitwidth=self.bitwidth, block=current_block())
         if not self.bitwidth:
             raise PyrtlError('Conditional assignment only defined on '
                              'Registers with pre-defined bitwidths')
@@ -709,4 +902,6 @@ class Register(WireVector):
         # the property "next" or delayed when there is a conditional assignement
         self.reg_in = next
         net = LogicNet('r', None, args=(self.reg_in,), dests=(self,))
-        working_block().add_net(net)
+        # working_block().add_net(net)
+        # self._block.add_net(net)
+        current_block().add_net(net)

@@ -43,6 +43,7 @@ under a condition.
 # as described above, not through the classes themselves.
 
 from __future__ import print_function, unicode_literals
+from pyrtl.core import current_block
 
 from .pyrtlexceptions import PyrtlError, PyrtlInternalError
 from .wire import WireVector, Const, Register
@@ -131,7 +132,7 @@ def _pop_condition():
     """As we exit conditions, this pops them off the stack."""
     global _depth
     _check_under_condition()
-    _conditions_list_stack.pop()
+    _conditions_list_stack.pop()  
     _depth -= 1
 
 
@@ -208,7 +209,8 @@ def _finalize():
                 raise PyrtlInternalError('unknown assignment in finalize')
             predlist = _predicate_map[lhs]
             for p, rhs in predlist:
-                result = select(p, truecase=rhs, falsecase=result)
+                # result = select(p, truecase=rhs, falsecase=result, block=lhs._block)
+                result = select(p, truecase=rhs, falsecase=result, block=current_block())
             lhs._build(result)
 
 
@@ -219,7 +221,6 @@ def _current_select():
     The value pred_set is a set([ (predicate, bool), ... ]) as described in
     the _reset_conditional_state
     """
-
     # helper to create the conjuction of predicates
     def and_with_possible_none(a, b):
         assert(a is not None or b is not None)
@@ -248,7 +249,7 @@ def _current_select():
         for predicate in between_otherwise_and_current(predlist):
             select = and_with_possible_none(select, ~predicate)
             pred_set.add((predicate, True))
-        # include the predicate for the current one (not negated)
+        # include the predicate for the current one (not negated) 
         if predlist[-1] is not otherwise:
             predicate = predlist[-1]
             select = and_with_possible_none(select, predicate)
@@ -258,7 +259,6 @@ def _current_select():
         raise PyrtlError('problem with conditional assignment')
     if len(select) != 1:
         raise PyrtlInternalError('conditional predicate with length greater than 1')
-
     return select, pred_set
 
 # Some examples that were helpful in the design and testing of conditional

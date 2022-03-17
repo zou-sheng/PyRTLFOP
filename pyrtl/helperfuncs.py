@@ -418,9 +418,9 @@ def val_to_formatted_str(val, format, enum_set=None):
         raise PyrtlError('unknown format type {}'.format(format))
     return rval
 
-
+# write by zousheng 2021/7/18
 # this is the return type of value_bitwidth_tuple
-ValueBitwidthTuple = collections.namedtuple('ValueBitwidthTuple', 'value bitwidth')
+ValueBitwidthTuple = collections.namedtuple('ValueBitwidthTuple', 'value bitwidth neg')
 
 
 def infer_val_and_bitwidth(rawinput, bitwidth=None):
@@ -464,23 +464,25 @@ def _convert_bool(bool_val, bitwidth=None):
         bitwidth = 1
     if bitwidth != 1:
         raise PyrtlError('error, boolean has bitwidth not equal to 1')
-    return ValueBitwidthTuple(num, bitwidth)
+    return ValueBitwidthTuple(num, bitwidth, False)  # write by zousheng 2021/7/18
 
 
 def _convert_int(val, bitwidth=None):
+    neg = False   # write by zousheng 2021/7/18
     if val >= 0:
         num = val
         # infer bitwidth if it is not specified explicitly
         if bitwidth is None:
             bitwidth = len(bin(num)) - 2  # the -2 for the "0b" at the start of the string
     else:  # val is negative
+        neg = True   # write by zousheng 2021/7/18
         if bitwidth is None:
             raise PyrtlError(
                 'negative Const values must have bitwidth declared explicitly')
         if (val >> bitwidth-1) != -1:
             raise PyrtlError('insufficient bits for negative number')
         num = val & ((1 << bitwidth) - 1)  # result is a twos complement value
-    return ValueBitwidthTuple(num, bitwidth)
+    return ValueBitwidthTuple(num, bitwidth, neg)  # write by zousheng 2021/7/18
 
 
 def _convert_verilog_str(val, bitwidth=None):
@@ -518,7 +520,7 @@ def _convert_verilog_str(val, bitwidth=None):
                          ' (if bitwidth=None is used, pyrtl will determine the bitwidth from the'
                          ' verilog-style constant specification)')
 
-    return ValueBitwidthTuple(num, bitwidth)
+    return ValueBitwidthTuple(num, bitwidth, neg)  # write by zousheng 2021/7/18
 
 
 def get_stacks(*wires):

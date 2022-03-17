@@ -345,6 +345,7 @@ def _remove_unused_wires(block, keep_inputs=True):
 
     block.wirevector_set = valid_wires
 
+
 # --------------------------------------------------------------------
 #    __           ___       ___  __     __
 #   /__` \ / |\ |  |  |__| |__  /__` | /__`

@@ -12,21 +12,11 @@ def transfer_to_bin(value, bitwidth):
 
 def translate_to_smt(block, output_file, circle=1, rom_blocks=None): 
     consts = dict()
-    '''   2020/8/13
     for wire in list(block.wirevector_subset()):
         if type(wire) == Const:
             # some const is in the form like const_0_1'b1, is this legal operation?
             wire.name = wire.name.split("'").pop(0)
             consts[wire.name] = wire
-    '''   
-    for log_net in list(block.logic_subset()):
-        for t in log_net:
-            if t:
-                for i in t:
-                    if isinstance(i, Const):
-                        name = i.name.split("'").pop(0)
-                        consts[name] = i
-
     Declare = []
     # write "Main"
     # node_cntr = 0
@@ -242,14 +232,9 @@ def translate_to_smt(block, output_file, circle=1, rom_blocks=None):
                     output_file.write("(declare-const %s (_ BitVec %s))\n" % (log_net.args[0].name, log_net.args[0].bitwidth))
                     Declare.append(log_net.args[0].name)
                 string = ''
-                extract_item = 0
                 for i in log_net.op_param[::-1]:
-                    extract_item = extract_item + 1
                     string = string + "((_ extract " + str(i) + " " + str(i) + ")" + " " + log_net.args[0].name + ") "
-                if extract_item == 1:
-                    output_file.write("(assert (= %s  %s))\n" % (log_net.dests[0].name, string))
-                else:
-                    output_file.write("(assert (= %s (concat %s)))\n" % (log_net.dests[0].name, string))
+                output_file.write("(assert (= %s (concat %s)))\n" % (log_net.dests[0].name, string))
             elif log_net.op == 'm':  ########6/2
                 if not log_net.op_param[1].name in initializedMem:
                     initializedMem.append(log_net.op_param[1].name)
@@ -506,9 +491,7 @@ def translate_to_smt(block, output_file, circle=1, rom_blocks=None):
                     output_file.write("(assert (= %s_%s (concat %s)))\n" % (log_net.dests[0].name, str(cir), c))
                 elif log_net.op == 's':
                     string = ''
-                    extract_item = 0
                     for i in log_net.op_param[::-1]:
-                        extract_item = extract_item + 1
                         string = string + "((_ extract " + str(i) + " " + str(i) + ")" + " " + log_net.args[
                             0].name + '_' + str(cir) + ") "
                     if log_net.dests[0].name + '_' + str(cir) not in Declare:
@@ -519,10 +502,7 @@ def translate_to_smt(block, output_file, circle=1, rom_blocks=None):
                         output_file.write("(declare-const %s_%s (_ BitVec %s))\n" % (
                         log_net.args[0].name, cir, log_net.args[0].bitwidth))
                         Declare.append(log_net.args[0].name + '_' + str(cir))
-                    if extract_item == 1:
-                        output_file.write("(assert (= %s_%s %s))\n" % (log_net.dests[0].name, cir, string))
-                    else:
-                        output_file.write("(assert (= %s_%s (concat %s)))\n" % (log_net.dests[0].name, cir, string))
+                    output_file.write("(assert (= %s_%s (concat %s)))\n" % (log_net.dests[0].name, cir, string))
                 elif log_net.op == 'r':
                     if log_net.dests[0].name + '_' + str(cir) not in Declare:
                         output_file.write("(declare-const %s_%s (_ BitVec %s))\n" % (
@@ -675,10 +655,9 @@ def solve_smt(block, mux, mux_clock, cycle, initial_values=None, rom_blocks=None
         else:
             for i in initial_values:
                 output_file.write("(assert (= %s %s))\n" % (i, transfer_to_bin(initial_values[i], get_value_bitwidth(block, i))))
-        output_file.write("(check-sat)")
         output_file.seek(0)
         l = output_file.read()
-        print(l)
+
         inps = dict()
         otps = dict()
         s = z3.Solver()
@@ -702,8 +681,6 @@ def solve_smt(block, mux, mux_clock, cycle, initial_values=None, rom_blocks=None
                    # otps[m[i].name()] = m[m[i]].as_long()
             # print(otps)
             return inps
-        elif s.check() == z3.unknown:
-            return s.reason_unknown()
         else:
             return {}
 

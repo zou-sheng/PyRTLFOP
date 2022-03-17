@@ -49,6 +49,7 @@ class AES(object):
     def __init__(self):
         self.memories_built = False
         self._key_len = 128
+        self.rom_blocks = []
 
     def encryption(self, plaintext, key):
         """
@@ -288,8 +289,10 @@ class AES(object):
 
     def _build_memories(self):
         def build_mem(data):
-            return pyrtl.RomBlock(bitwidth=8, addrwidth=8, romdata=data, build_new_roms=True,
+            rom = pyrtl.RomBlock(bitwidth=8, addrwidth=8, romdata=data, build_new_roms=True,
                                   asynchronous=True)
+            self.rom_blocks.append(rom)
+            return rom            
 
         self.sbox = build_mem(self._sbox_data)
         self.inv_sbox = build_mem(self._inv_sbox_data)

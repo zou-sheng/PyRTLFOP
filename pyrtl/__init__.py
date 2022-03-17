@@ -15,7 +15,7 @@ from .core import set_debug_mode
 
 # convenience classes for building hardware
 from .wire import WireVector
-from .wire import Input, Output
+from .wire import Input, Output, Inout
 from .wire import Const
 from .wire import Register
 
@@ -101,6 +101,8 @@ from .passes import synthesize
 from .passes import nand_synth
 from .passes import and_inverter_synth
 from .passes import optimize
+# from .passes import change_inouts_to_wires
+
 from .toFirrtl import translate_to_firrtl
 
 from .symbolic import solve_smt

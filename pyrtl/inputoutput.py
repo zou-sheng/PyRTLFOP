@@ -13,7 +13,7 @@ import collections
 from .pyrtlexceptions import PyrtlError, PyrtlInternalError
 from .core import working_block, _NameSanitizer
 from .wire import WireVector, Input, Output, Const, Register
-from .corecircuits import concat_list
+from .corecircuits import concat
 from .memory import RomBlock
 
 
@@ -23,7 +23,7 @@ from .memory import RomBlock
 #    | | \| |    \__/  |
 
 
-def input_from_blif(blif, block=None, merge_io_vectors=True, clock_name='clk'):
+def input_from_blif(blif, block=None, merge_io_vectors=True):
     """ Read an open blif file or string as input, updating the block appropriately
 
     Assumes the blif has been flattened and their is only a single module.
@@ -34,7 +34,7 @@ def input_from_blif(blif, block=None, merge_io_vectors=True, clock_name='clk'):
     import pyparsing
     import six
     from pyparsing import (Word, Literal, OneOrMore, ZeroOrMore,
-                           Suppress, Group, Keyword, Optional, oneOf)
+                           Suppress, Group, Keyword)
 
     block = working_block(block)
 
@@ -60,8 +60,8 @@ def input_from_blif(blif, block=None, merge_io_vectors=True, clock_name='clk'):
         return s
 
     # Begin BLIF language definition
-    signal_start = pyparsing.alphas + '$:[]_<>\\\/?'
-    signal_middle = pyparsing.alphas + pyparsing.nums + '$:[]_<>\\\/.?'
+    signal_start = pyparsing.alphas + '$:[]_<>\\\/'
+    signal_middle = pyparsing.alphas + pyparsing.nums + '$:[]_<>\\\/.'
     signal_id = Word(signal_start, signal_middle)
     header = SKeyword('.model') + signal_id('model_name')
     input_list = Group(SKeyword('.inputs') + OneOrMore(signal_id))('input_list')
@@ -81,14 +81,11 @@ def input_from_blif(blif, block=None, merge_io_vectors=True, clock_name='clk'):
     dffas_def = Group(SKeyword('.subckt') + dffas_keyword + dffas_formal)('dffas_def')
 
     # synchronous Flip-flop
-    dffs_init_val = Optional(oneOf("0 1 2 3"), default=Literal("0"))
-    # TODO I think <type> and <control> ('re' and 'C') below are technically optional too
     dffs_def = Group(SKeyword('.latch') +
                      signal_id('D') +
                      signal_id('Q') +
                      SLiteral('re') +
-                     signal_id('C') +
-                     dffs_init_val('I'))('dffs_def')
+                     signal_id('C'))('dffs_def')
     command_def = name_def | dffas_def | dffs_def
     command_list = Group(OneOrMore(command_def))('command_list')
 
@@ -109,7 +106,7 @@ def input_from_blif(blif, block=None, merge_io_vectors=True, clock_name='clk'):
         name_counts = collections.Counter(start_names)
         for input_name in name_counts:
             bitwidth = name_counts[input_name]
-            if input_name == clock_name:
+            if input_name == 'clk':
                 clk_set.add(input_name)
             elif not merge_io_vectors or bitwidth == 1:
                 block.add_wirevector(Input(bitwidth=1, name=input_name))
@@ -134,7 +131,7 @@ def input_from_blif(blif, block=None, merge_io_vectors=True, clock_name='clk'):
                     bit_name = output_name + '[' + str(i) + ']'
                     bit_wire = WireVector(bitwidth=1, name=bit_name, block=block)
                     bit_list.append(bit_wire)
-                wire_out <<= concat_list(bit_list)
+                wire_out <<= concat(*bit_list)
 
     def extract_commands(model):
         # for each "command" (dff or net) in the model
@@ -201,13 +198,6 @@ def input_from_blif(blif, block=None, merge_io_vectors=True, clock_name='clk'):
         flop = Register(bitwidth=1, name=regname)
         flop.next <<= twire(command['D'])
         flop_output = twire(command['Q'])
-        init_val = command['I']
-        if init_val == "1":
-            # e.g. in Verilog: `initial reg <= 1;`
-            raise PyrtlError("Initializing latches to 1 is not supported. "
-                              "Acceptable values are: 0, 2 (don't care), and 3 (unknown); in any case, "
-                              "PyRTL will ensure all stateful elements come up 0. "
-                              "For finer control over the initial value, use specialized reset logic.")
         flop_output <<= flop
 
     for model in result:
@@ -426,7 +416,7 @@ def net_graph(block=None, split_state=False):
             graph[w] = {}
 
     # add all of the edges
-    for w in (dest_set | arg_set):
+    for w in (dest_set & arg_set):
         try:
             _from = wire_src_dict[w]
         except Exception:
@@ -481,14 +471,12 @@ def _graphviz_default_namer(thing, is_edge=True, is_to_splitmerge=False):
 
     elif isinstance(thing, Const):
         return '[label="%d", shape=circle, fillcolor=lightgrey]' % thing.val
-    elif isinstance(thing, Input):
-        return '[label="%s", shape=invhouse, fillcolor=coral]' % thing.name
-    elif isinstance(thing, Output):
-        return '[label="%s", shape=house, fillcolor=lawngreen]' % thing.name
+    elif isinstance(thing, (Input, Output)):
+        return '[label="%s", shape=circle, fillcolor=none]' % thing.name
     elif isinstance(thing, Register):
         return '[label="%s", shape=square, fillcolor=gold]' % thing.name
     elif isinstance(thing, WireVector):
-        return '[label="%s", shape=circle, fillcolor=none]' % thing.name
+        return '[label="", shape=circle, fillcolor=none]'
     else:
         try:
             if thing.op == '&':
@@ -498,23 +486,16 @@ def _graphviz_default_namer(thing, is_edge=True, is_to_splitmerge=False):
             elif thing.op == '^':
                 return '[label="xor"]'
             elif thing.op == '~':
-                return '[label="not", shape=invtriangle]'
+                return '[label="not"]'
             elif thing.op == 'x':
-                return '[label="mux", shape=invtrapezium]'
-            elif thing.op == 's':
-                selEnd = thing.op_param[0]
-                if len(thing.op_param) < 2:
-                    selBegin = selEnd
-                else:
-                    selBegin = thing.op_param[len(thing.op_param)-1]
-                return '[label="bits(%s,%s)", height=.1, width=.1]' % (selBegin, selEnd)
-            elif thing.op in 'c':
-                return '[label="concat", height=.1, width=.1]'
+                return '[label="mux"]'
+            elif thing.op in 'sc':
+                return '[label="", height=.1, width=.1]'
             elif thing.op == 'r':
                 name = thing.dests[0].name or ''
                 return '[label="%s.next", shape=square, fillcolor=gold]' % name
             elif thing.op == 'w':
-                return '[label="", height=.1, width=.1]'
+                return '[label="buf"]'
             else:
                 return '[label="%s"]' % (thing.op + str(thing.op_param or ''))
         except AttributeError:
@@ -535,7 +516,7 @@ def block_to_graphviz_string(block=None, namer=_graphviz_default_namer):
               digraph g {\n
               graph [splines="spline"];
               node [shape=circle, style=filled, fillcolor=lightblue1,
-                    fontcolor=black, fontname=helvetica, penwidth=0,
+                    fontcolor=grey, fontname=helvetica, penwidth=0,
                     fixedsize=true];
               edge [labelfloat=false, penwidth=2, color=deepskyblue, arrowsize=.5];
               """

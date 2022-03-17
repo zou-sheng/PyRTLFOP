@@ -6,7 +6,7 @@ import six
 import math
 
 from .pyrtlexceptions import PyrtlError, PyrtlInternalError
-from .core import LogicNet, working_block
+from .core import LogicNet, current_block, working_block
 from .wire import Const, WireVector
 from pyrtl.rtllib import barrel
 from pyrtl.rtllib import muxes
@@ -82,7 +82,7 @@ def mux(index, *mux_ins, **kwargs):
                   truecase=mux(index[0:-1], *mux_ins[half:]))
 
 
-def select(sel, truecase, falsecase):
+def select(sel, truecase, falsecase, block=None):
     """ Multiplexer returning falsecase for select==0, otherwise truecase.
 
     :param WireVector sel: used as the select input to the multiplexer
@@ -97,16 +97,24 @@ def select(sel, truecase, falsecase):
 
         select( a<5, truecase=a, falsecase=5 )
     """
-    sel, f, t = (as_wires(w) for w in (sel, falsecase, truecase))
+    sel, f, t = (as_wires(w, block=sel._block) for w in (sel, falsecase, truecase))
+    # WRITE BY ZOUSHENG 2021/7/2
+    if isinstance(falsecase, int):
+        f.is_default = True
     f, t = match_bitwidth(f, t)
-    outwire = WireVector(bitwidth=len(f))
+    # outwire = WireVector(bitwidth=len(f), block=sel._block)
+    outwire = WireVector(bitwidth=len(f), block=current_block())
 
     net = LogicNet(op='x', op_param=None, args=(sel, f, t), dests=(outwire,))
-    working_block().add_net(net)  # this includes sanity check on the mux
+    # working_block().add_net(net)  # this includes sanity check on the mux
+    if block is None:
+        block = working_block()
+    block.add_net(net)
+    
     return outwire
 
 
-def concat(*args):
+def concat(*args, block=None):
     """ Concatenates multiple WireVectors into a single WireVector
 
     :param WireVector args: inputs to be concatenated
@@ -125,17 +133,17 @@ def concat(*args):
     if len(args) <= 0:
         raise PyrtlError('error, concat requires at least 1 argument')
     if len(args) == 1:
-        return as_wires(args[0])
+        return as_wires(args[0], block=block)
 
-    arg_wirevectors = tuple(as_wires(arg) for arg in args)
+    arg_wirevectors = tuple(as_wires(arg, block=block) for arg in args)
     final_width = sum(len(arg) for arg in arg_wirevectors)
-    outwire = WireVector(bitwidth=final_width)
+    outwire = WireVector(bitwidth=final_width, block=arg_wirevectors[0]._block)
     net = LogicNet(
         op='c',
         op_param=None,
         args=arg_wirevectors,
         dests=(outwire,))
-    working_block().add_net(net)
+    working_block(block).add_net(net)
     return outwire
 
 
@@ -363,7 +371,9 @@ def as_wires(val, bitwidth=None, truncating=True, block=None):
 
     """
     from .memory import _MemIndexed
-    block = working_block(block)
+    # block = working_block(block)
+    if block is None:
+        block = working_block()
 
     if isinstance(val, (int, six.string_types)):
         # note that this case captures bool as well (as bools are instances of ints)

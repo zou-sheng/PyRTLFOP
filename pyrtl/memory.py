@@ -42,10 +42,12 @@ class _MemIndexed(WireVector):
     but if you try to *set* the value with <<= or |= then it will generate a
     _MemAssignment object rather than the normal wire assignment. """
 
-    def __init__(self, mem, index):
+    def __init__(self, mem, index, block=None):
         self.mem = mem
         self.index = index
         self.wire = None
+        # write by zousheng 2021/6/28
+        self._block = working_block(block)
 
     def __ilshift__(self, other):
         return _MemAssignment(rhs=other, is_conditional=False)
@@ -105,7 +107,6 @@ class _MemReadBase(object):
         self.readport_nets = []
         self.id = _memIndex.next_index()
         self.asynchronous = asynchronous
-        self.block._add_memblock(self)
 
     def __getitem__(self, item):
         """ Builds circuitry to retrieve an item from the memory """

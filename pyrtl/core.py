@@ -16,6 +16,7 @@ import keyword
 from .pyrtlexceptions import PyrtlError, PyrtlInternalError
 
 
+
 # -----------------------------------------------------------------
 #    __        __   __
 #   |__) |    /  \ /  ` |__/
@@ -72,6 +73,12 @@ class LogicNet(collections.namedtuple('LogicNet', ['op', 'op_param', 'args', 'de
                                                         address addr; req. write enable (wr_en)
 
     """
+    # write by zousheng 2021/5/21
+    def __init__(self, op, op_param, args, dests):
+        super(LogicNet, self).__init__()
+        if self.dests:   # op='@'时无dests
+            self.dests[0].args = self.args 
+            self.dests[0].op = op
 
     def __str__(self):
         rhs = ', '.join(str(x) for x in self.args)
@@ -173,6 +180,29 @@ class LogicNet(collections.namedtuple('LogicNet', ['op', 'op_param', 'args', 'de
     __le__ = _compare_error
     __ge__ = _compare_error
 
+class _NameIndexer(object):
+    """ Provides internal names that are based on a prefix and an index"""
+    def __init__(self, internal_prefix='_sani_temp'):
+        self.internal_prefix = internal_prefix
+        self.internal_index = 0
+
+    def make_valid_string(self):
+        """Build a valid string based on the prefix and internal index"""
+        return self.internal_prefix + str(self.next_index())
+
+    def next_index(self):
+        index = self.internal_index
+        self.internal_index += 1
+        return index
+
+_blockIndexer = _NameIndexer("block")
+
+def next_tempvar_name(name=""):
+    if name == '':  # sadly regex checks are sometimes too slow
+        block_name = _blockIndexer.make_valid_string()
+        return block_name
+    else:
+        return name
 
 class Block(object):
     """ Block encapsulates a netlist.
@@ -254,7 +284,7 @@ class Block(object):
     the blocks to more primitive ops.
     """
 
-    def __init__(self):
+    def __init__(self, name=''):
         """Creates an empty hardware block."""
         self.logic = set()  # set of nets, each is a LogicNet named tuple
         self.wirevector_set = set()  # set of all wirevectors
@@ -262,6 +292,9 @@ class Block(object):
         # pre-synthesis wirevectors to post-synthesis vectors
         self.legal_ops = set('w~&|^n+-*<>=xcsrm@')  # set of legal OPS
         self.rtl_assert_dict = {}   # map from wirevectors -> exceptions, used by rtl_assert
+        
+        # write by zousheng 2021/5/21
+        self.name = next_tempvar_name(name)
 
     def __str__(self):
         """String form has one LogicNet per line."""
@@ -278,12 +311,21 @@ class Block(object):
 
     def add_wirevector(self, wirevector):
         """ Add a wirevector object to the block."""
+        # write by zousheng 2021/7/8
+        # wirevector.current_block = self
+
         self.sanity_check_wirevector(wirevector)
-        self.wirevector_set.add(wirevector)
-        self.wirevector_by_name[wirevector.name] = wirevector
+        if wirevector.name not in self.wirevector_by_name:
+            self.wirevector_set.add(wirevector)
+            self.wirevector_by_name[wirevector.name] = wirevector
+        elif wirevector._block != self.wirevector_by_name[wirevector.name]._block or type(wirevector._block) != type(self.wirevector_by_name[wirevector.name]):
+            self.remove_wirevector(self.wirevector_by_name[wirevector.name])
+            self.wirevector_set.add(wirevector)
+            self.wirevector_by_name[wirevector.name] = wirevector
 
     def remove_wirevector(self, wirevector):
         """ Remove a wirevector object to the block."""
+
         self.wirevector_set.remove(wirevector)
         del self.wirevector_by_name[wirevector.name]
 
@@ -356,7 +398,10 @@ class Block(object):
         """
         src_list = {}
         dst_list = {}
-
+        # print('1111111111111111111111111111111111111111111111111111111111111111111111111')
+        # for i in self.logic:
+        #     print(i)
+        # print('1111111111111111111111111111111111111111111111111111111111111111111111111')  
         def add_wire_src(edge, node):
             if edge in src_list:
                 raise PyrtlError('Wire "{}" has multiple drivers (check for multiple assignments '
@@ -399,6 +444,10 @@ class Block(object):
         logic that do not involve registers
         Also, the order of the nets is not guaranteed to be the the same
         over multiple iterations"""
+
+        # write by zousheng 2021/5/21
+        self.change_inouts_to_wires()
+
         from .wire import Input, Const, Register
         src_dict, dest_dict = self.net_connections()
         # to_clear = self.wirevector_subset((Input, Const, Register))
@@ -410,18 +459,18 @@ class Block(object):
                 to_clear.add(i)
         cleared = set()
         remaining = self.logic.copy()
+
         try:
             while len(to_clear):
                 wire_to_check = to_clear.pop()
                 cleared.add(wire_to_check)
-                
                 if wire_to_check in dest_dict:
                     for gate in dest_dict[wire_to_check]:  # loop over logicnets not yet returned
                         if all(arg in cleared for arg in gate.args):  # if all args ready
                             yield gate
                             remaining.remove(gate)
                             if gate.op != 'r':
-                                to_clear.update(gate.dests)
+                                to_clear.update(gate.dests)   
         except KeyError as e:
             import six
             six.raise_from(PyrtlError("Cannot Iterate through malformed block"), e)
@@ -437,9 +486,13 @@ class Block(object):
         Should not modify anything, only check data structures to make sure they have been
         built according to the assumptions stated in the Block comments."""
 
+        # write by zousheng 2021/7/2
+        self.change_inouts_to_wires()
+
         # TODO: check that the wirevector_by_name is sane
         from .wire import Input, Const, Output
         from .helperfuncs import get_stack, get_stacks
+
 
         # check for valid LogicNets (and wires)
         for net in self.logic:
@@ -449,10 +502,13 @@ class Block(object):
             if w.bitwidth is None:
                 raise PyrtlError(
                     'error, missing bitwidth for WireVector "%s" \n\n %s' % (w.name, get_stack(w)))
-
+     
         # check for unique names
         wirevector_names_set = set(x.name for x in self.wirevector_set)
         if len(self.wirevector_set) != len(wirevector_names_set):
+            print(len(self.wirevector_set))
+            print(self.name)
+            print(len(wirevector_names_set))
             wirevector_names_list = [x.name for x in self.wirevector_set]
             for w in wirevector_names_set:
                 wirevector_names_list.remove(w)
@@ -481,7 +537,7 @@ class Block(object):
             bad_wire_names = '\n    '.join(str(x) for x in allwires_minus_connected)
             raise PyrtlError('Wires declared but not connected:\n %s \n\n %s' % (bad_wire_names,
                              get_stacks(*allwires_minus_connected)))
-
+       
         # Check for wires that are inputs to a logicNet, but are not block inputs and are never
         # driven.
         ins = arg_set.difference(dest_set)
@@ -489,7 +545,7 @@ class Block(object):
         if len(undriven) > 0:
             raise PyrtlError('Wires used but never driven: %s \n\n %s' %
                              ([w.name for w in undriven], get_stacks(*undriven)))
-
+  
         # Check for async memories not specified as such
         self.sanity_check_memory_sync(wire_src_dict)
 
@@ -515,7 +571,7 @@ class Block(object):
         sync_mems = set(m for m in self.logic_subset('m') if not m.op_param[1].asynchronous)
         if not len(sync_mems):
             return  # nothing to check here
-
+   
         if wire_src_dict is None:
             wire_src_dict, wdd = self.net_connections()
 
@@ -562,8 +618,12 @@ class Block(object):
         for w in net.args + net.dests:
             self.sanity_check_wirevector(w)
             if w._block is not self:
-                raise PyrtlInternalError('error, net references different block')
+                self.add_wirevector(w)
+                # raise PyrtlInternalError('error, net references different block')
             if w not in self.wirevector_set:
+                print(w._block.name)
+                print(self.name)
+                print(net)
                 raise PyrtlInternalError('error, net with unknown source "%s"' % w.name)
 
         # checks that input and output wirevectors are not misused
@@ -574,9 +634,8 @@ class Block(object):
             if isinstance(w, Const):
                 raise PyrtlInternalError('error, Consts cannot be destinations to a net')
         for w in net.args:
-            pass
-            # if isinstance(w, Output):
-                # raise PyrtlInternalError('error, Outputs cannot be arguments for a net')
+            if isinstance(w, Output):
+                w.assign = True
 
         if net.op not in self.legal_ops:
             raise PyrtlInternalError('error, net op "%s" not from acceptable set %s' %
@@ -628,6 +687,8 @@ class Block(object):
 
         # check destination validity
         if net.op in 'w~&|^nr' and net.dests[0].bitwidth > net.args[0].bitwidth:
+            print(net.dests[0].name)
+            print(net.args[0].name)
             raise PyrtlInternalError('error, upper bits of destination unassigned')
         if net.op in '<>=' and net.dests[0].bitwidth != 1:
             raise PyrtlInternalError('error, destination should be of bitwidth=1')
@@ -646,6 +707,456 @@ class Block(object):
         if net.op == '@' and net.dests != ():
             raise PyrtlInternalError('error, mem write dest should be empty tuple')
 
+    # write by zousheng 2021/5/21
+    # change input output to wirevector do not consider whether the parameters need to change
+    def change_inouts_to_wires(self):
+        befor_change_set = set()
+        after_change_set = set()
+        change_signals = dict()
+        remove_signals = set()  #changed signals should be removed from wirevector_set 
+        from .wire import WireVector, Input, Output, Const
+        for logic_net in self.logic:   #find all signals that need to change
+            for arg in logic_net.args:
+                if isinstance(arg, Output) and arg.assign:
+                    print(logic_net)
+                    # change_signals[arg.name] = WireVector(bitwidth=arg.bitwidth, name=arg.id, block=arg._block)
+                    # change_signals[arg.name].identified = arg.identified
+                    befor_change_set.add(logic_net)
+                    remove_signals.add(arg)
+            for dest in logic_net.dests:
+                if isinstance(dest, Input) and dest.is_assigned:
+                    # change_signals[dest.name] = WireVector(bitwidth=dest.bitwidth, name=dest.id, block=dest._block)
+                    # change_signals[dest.name].identified = dest.identified
+                    befor_change_set.add(logic_net)
+                    remove_signals.add(dest)
+        
+        for i in remove_signals:
+            change_signals[i.name] = WireVector(bitwidth=i.bitwidth, name=i.id, block=i._block)
+            change_signals[i.name].identified = i.identified
+
+        for logic_net in self.logic:    #change signals in change_signals
+            changed_args = []
+            changed_dests = []
+            for arg in logic_net.args:
+                if arg.name in change_signals:
+                    changed_args.append(change_signals[arg.name])
+                else:
+                    changed_args.append(arg)
+                befor_change_set.add(logic_net)
+            for dest in logic_net.dests:
+                if dest.name in change_signals:
+                    changed_dests.append(change_signals[dest.name])
+                else:
+                    changed_dests.append(dest)
+            after_change_set.add(LogicNet(
+                op = logic_net.op,
+                op_param = logic_net.op_param,
+                args = tuple(changed_args),
+                dests= tuple(changed_dests)))
+        for key in change_signals:
+            self.add_wirevector(change_signals[key])
+
+        for logic_net in befor_change_set:
+            # print(logic_net)
+            self.logic.remove(logic_net)
+        for logic_net in after_change_set:
+            self.add_net(logic_net) 
+
+        # for signal in remove_signals:
+        #     self.remove_wirevector(signal)
+        # for key in change_signals:
+        #     self.add_wirevector(change_signals[key])
+
+    # write by zousheng 2021/5/27
+    def __add__(self, other):
+        from .wire import Input, Output, Const, Register
+
+        other = self.dividing_feature_circuit(other)
+        # print([i.name for i in other.wirevector_set])
+        print(other)
+        # # 去掉特征模块MUX默认端及相关信号和logicnet
+        # 得到默认端
+        default_set = other.__get_muxs_default_args()
+
+        default_dests_set = set()  
+        # default_set_copy = set()  #保存默认端
+        # for i in default_set:
+        #     default_set_copy.add(i)
+
+        default_set_with_dest = set()
+
+        feature_possible_args = self.__get_feature_possible_args()
+        print([feature_possible_args[i].id for i in feature_possible_args])
+        print([feature_possible_args[i].name for i in feature_possible_args])
+        print(22)
+        dests_to_args = dict()
+        # 找到每一个默认端对应的输出端
+        for dest in other.__get_block_dests():
+            if dest.id in feature_possible_args:
+                args_set = set()
+                temp_dests_set = set()
+                temp_dests_set.add(dest)
+
+                while temp_dests_set:
+                    temp_dest = temp_dests_set.pop()
+                    if temp_dest.op == 'x':
+                        for arg in temp_dest.args:
+                            args_set.add(arg)
+                            temp_dests_set.add(arg)
+
+                dests_to_args[dest] = args_set & default_set
+                default_set_with_dest = default_set_with_dest | (args_set & default_set)
+
+        # for i in default_set_with_dest:
+        #     print(i.name)
+        #     print(66)
+
+        # for i in other.logic:
+        #     print(i)
+
+        # while default_set_with_dest:
+        #     wv = default_set_with_dest.pop()
+        #     default_dests_set.add(wv)
+        #     default_set_with_dest = default_set_with_dest | set(wv.args)
+        
+        for i in default_set_with_dest:
+            default_arg_to_args = set()
+            default_arg_to_dests = set()
+            flag = False
+            default_arg_to_args.add(i)
+            while default_arg_to_args:
+                wv = default_arg_to_args.pop()
+                default_arg_to_dests.add(wv)
+                default_arg_to_args = default_arg_to_args | set(wv.args)
+                if wv.is_default:
+                    flag = True
+                    print(wv.name)
+            # print(222222222222222222)
+            # for i in default_arg_to_dests:
+            #     print(i)
+            if flag:
+                default_dests_set = default_dests_set | default_arg_to_dests
+                    # print(wv.name)
+                    # default_dests_set = default_dests_set | default_arg_to_dests
+                for i in default_arg_to_dests:
+                    print(i.name)
+        print(111111111111111)
+        print(1111111111111111111111)
+        for i in default_dests_set:
+            print(i.name)
+        
+        default_dests_name = [i.name for i in default_dests_set]
+        
+        default_nets_set = set()
+        for logicnet in other.logic:
+            if logicnet.dests and logicnet.dests[0].name in default_dests_name:
+                default_nets_set.add(logicnet)
+        
+        for net in default_nets_set:
+            other.logic.remove(net)
+
+        for i in default_dests_set - default_set:
+            other.remove_wirevector(i)
+
+        # dests_to_args = dict()
+        # # 找到每一个默认端对应的输出端
+        # for dest in self.__get_block_dests(feature_block):
+        #     args_set = set()
+        #     temp_dests_set = set()
+        #     temp_dests_set.add(dest)
+
+        #     while temp_dests_set:
+        #         temp_dest = temp_dests_set.pop()
+        #         for arg in temp_dest.args:
+        #             args_set.add(arg)
+        #             temp_dests_set.add(arg)
+            
+        #     dests_to_args[dest] = args_set & default_set_copy
+
+        connect_net_set = set()
+        delete_net_set = set()
+        # 将base_block与feature_block合成
+        for dest in dests_to_args:
+            if dests_to_args[dest] & default_dests_set:
+                for i in self.wirevector_set:
+                    if i.id == dest.id and (i.identified or i.reg_input) and not isinstance(i, Register):
+                        if isinstance(i, Output):      # 保证Output会被转化为WireVector
+                            i.assign = True
+                        i.identified = False
+                        i.reg_input = False
+                        for arg in (dests_to_args[dest] & default_dests_set):
+                            if isinstance(arg, Input):      # 保证Input会被转化为WireVector
+                                arg.is_assigned = True
+                            # if not isinstance(arg, Const):
+                            #     print(arg.name)
+                            #     print(999)
+                            #     connect_net_set.add(LogicNet(
+                            #         op = 'w',
+                            #         op_param = None,
+                            #         args = (i,),
+                            #         dests = (arg,)
+                            #     ))
+                        for net in other.logic_subset('x'):
+                            if net.args[1] in (dests_to_args[dest] & default_dests_set):
+                                temp_args = list(net.args)
+                                temp_args[1] = i
+                                connect_net_set.add(LogicNet(
+                                    op = net.op,
+                                    op_param = net.op_param,
+                                    args = tuple(temp_args),
+                                    dests = net.dests
+                                ))
+                                delete_net_set.add(net)
+
+                        for net in self.logic:
+                            if i.name in [arg.name for arg in net.args]:
+                                temp_args = []
+                                for arg in net.args:
+                                    if arg.name == i.name:
+                                        temp_args.append(dest)
+                                        if isinstance(dest, Output):
+                                            dest.assign = True
+                                    else:
+                                        temp_args.append(arg)
+                                connect_net_set.add(LogicNet(
+                                    op = net.op,
+                                    op_param = net.op_param,
+                                    args = tuple(temp_args),
+                                    dests = net.dests
+                                ))
+                                delete_net_set.add(net)
+                        # for net in other.logic:
+                        #     if net.op == 'x' and net.args[1] in (dests_to_args[dest] & default_dests_set) and isinstance(net.args[1], Const):
+                        #         temp_args = list(net.args)
+                        #         temp_args[1] = i
+                        #         connect_net_set.add(LogicNet(
+                        #             op = net.op,
+                        #             op_param = net.op_param,
+                        #             args = tuple(temp_args),
+                        #             dests = net.dests
+                        #         ))
+                        #         delete_net_set.add(net)
+
+        for i in other.wirevector_subset(Input):
+            name = self.name + '_' + i.id
+            if name in self.wirevector_by_name:
+                # write by zousheng 2021/7/2
+                # i <<= self.wirevector_by_name[name]  
+                if isinstance(self.wirevector_by_name[name], Output):
+                    self.wirevector_by_name[name].assign = True
+                    # self.wirevector_by_name[name].identified = False
+                # if isinstance(i, Input):
+                i.is_assigned = True
+                i.identified = False
+                other.logic.add(LogicNet(
+                    op = 'w',
+                    op_param = None,
+                    args = (self.wirevector_by_name[name], ),
+                    dests = (i, )
+                ))
+
+        for i in other.wirevector_subset(Output):
+            name = self.name + '_' + i.id
+            if name in self.wirevector_by_name:
+                # write by zousheng 2021/7/2
+                # i <<= self.wirevector_by_name[name]  
+                if isinstance(self.wirevector_by_name[name], Input):
+                    self.wirevector_by_name[name].is_assigned = True
+                    other.wirevector_by_name[name].identified = False
+                # if isinstance(i, Input):
+                    i.assigned = True
+                    # i.identified = False
+                    other.logic.add(LogicNet(
+                        op = 'w',
+                        op_param = None,
+                        args = (other.wirevector_by_name[name], ),
+                        dests = (i, )
+                    ))
+
+        # print(len(other.logic))
+        other.logic = other.logic | self.logic
+        for logicnet in delete_net_set:
+            other.logic.remove(logicnet)
+        for logicnet in connect_net_set:
+            for wv in logicnet.args + logicnet.dests:
+                other.add_wirevector(wv)
+            other.logic.add(logicnet)
+        
+        
+        # other.wirevector_set = other.wirevector_set | self.wirevector_set
+        for i in self.wirevector_set:
+            other.add_wirevector(i)
+        print("***********************")
+        # for i in other.logic:
+        #     print(i)
+        print("***********************")
+        for i in other.wirevector_set:
+            # print(self.name)
+            i.current_block = other
+
+        return other
+
+    # write by zousheng 2021/7/19
+    # 根据同名寄存器对feature进行处理
+    # 具体做法：把feature同名寄存器的输入连到一个新的与base中同名的Output信号
+    # (也可以直接改，但感觉多一条可以少考虑很多情况，‘w’后期优化也简单)，
+    # 然后寄存器变成同名的Input信号
+    # 目前搞不定 pc.next <<= pc（base.pc/4R <-- r -- base.pc/4R ）这种捣乱的base
+    # 这种情况可以现在base里插一个tmp信号再处理
+    def dividing_feature_circuit(self, feature):
+        from .wire import Input, Output, Register
+        base_regs = {i.id: i for i in self.wirevector_set if isinstance(i, Register)}
+        feature_regs = {i.id: i for i in feature.wirevector_set if isinstance(i, Register)}
+
+        delete_net = set()
+        add_net = set()
+        delete_wire = set()
+        add_wirevector = set()
+        for i in self.wirevector_set:
+            if isinstance(i, Output):
+                print(i.name)
+                print(i.assign)
+        for key in feature_regs:
+            if key in base_regs.keys():
+                delete_wire.add(feature_regs[key])
+                print(feature_regs[key].id)
+                reg_in = Output(bitwidth=base_regs[key].args[0].bitwidth, name=base_regs[key].args[0].id, block=feature_regs[key]._block) 
+                reg_out = Input(bitwidth=feature_regs[key].bitwidth, name=feature_regs[key].id, block=feature_regs[key]._block)
+                select_default = Input(bitwidth=feature_regs[key].bitwidth, block=feature_regs[key]._block)
+                select_default.is_default = True
+                delete_wire.add(reg_in)   # wirevector定义之后就加入了wirevetor，可能用不上，所以先存到delete中
+                delete_wire.add(reg_out)
+                delete_wire.add(select_default)
+                for net in feature.logic:
+                    print(net)
+                    if feature_regs[key].name in [arg.name for arg in net.args]:
+                        if net.op == 'x' and net.args[1].name == feature_regs[key].name:
+                            if net.args[2].name == feature_regs[key].name: # feature.tmp4/4W <-- x -- feature.rst/1I, feature.pc/4R, feature.pc/4R
+                                add_net.add(LogicNet(
+                                        op = 'x',
+                                        op_param = None,
+                                        args = (net.args[0], select_default, reg_out),
+                                        dests = net.dests
+                                    ))
+                            else:
+                                add_net.add(LogicNet(
+                                        op = 'x',
+                                        op_param = None,
+                                        args = (net.args[0], select_default, net.args[2]),
+                                        dests = net.dests
+                                    ))
+                            add_wirevector.add(select_default)
+                            delete_net.add(net)
+                        else:
+                            temp_args = []
+                            for arg in net.args:
+                                if arg.name ==  feature_regs[key].name:
+                                    temp_args.append(reg_out)
+                                else:
+                                    temp_args.append(arg)
+                            add_net.add(LogicNet(
+                                    op = net.op,
+                                    op_param = net.op_param,
+                                    args = tuple(temp_args),
+                                    dests = net.dests
+                                ))
+                            add_wirevector.add(reg_out)
+                            delete_net.add(net)
+                    if feature_regs[key].name in [dest.name for dest in net.dests]:
+                        add_net.add(LogicNet(
+                                op = 'w',
+                                op_param = None,
+                                args = (feature_regs[key].args[0], ),
+                                dests = (reg_in, )
+                            ))
+                        add_wirevector.add(reg_in)
+                        delete_net.add(net)
+
+        for i in delete_wire:
+            try:    # pc/4O和pc/4I名字重复，在wirevector_by_name中只会出现一次，但可能会del两次
+                feature.remove_wirevector(i) 
+            except:
+                pass
+        # 或者这么写, 为Reg时，只删wirevector_set，不删wirevector_by_name
+        # for i in delete_wire:
+        #     if isinstance(i, Register):
+        #         feature.wirevector_set.remove(i)
+        #     else:
+        #         feature.remove_wirevector(i)
+
+        for i in add_wirevector:
+            feature.add_wirevector(i)
+
+        for i in delete_net:
+            feature.logic.remove(i)
+        for i in add_net:
+            feature.logic.add(i)
+
+        return feature
+
+    # write by zousheng 2021/6/1
+    def input_circuit(self, circuit, *args):
+        with set_working_block(self):
+            print(self.name)
+            circuit(*args)
+
+    # write by zousheng 2021/6/1
+    def __getattr__(self, item):
+        for i in self.wirevector_set:
+            if i.id == 'mac_op':
+                print(i.id)
+                print(i.identified)
+            if i.id == item and i.identified:
+                return i
+        raise PyrtlError('error, no such signal')
+
+    # write by zousheng 2021/6/1
+    def signal(self, name):
+        for i in self.wirevector_set:
+            if i.id == name and i.identified:
+                return i
+        raise PyrtlError('error, no such signal')
+
+    # 得到一个电路中默认得信号
+    def __get_muxs_default_args(self):
+        muxs_falsecase_args_set = set()
+        muxs_dests_set = set()
+
+        for logicnet in self.logic:
+            if logicnet.op == 'x':
+                muxs_falsecase_args_set.add(logicnet.args[1])
+                muxs_dests_set.add(logicnet.dests[0])
+        # for i in muxs_falsecase_args_set - muxs_dests_set:
+        #     print(i.name)
+        #     print(9)
+        return muxs_falsecase_args_set - muxs_dests_set
+
+    # 得到一个block得输出（终点）
+    def __get_block_dests(self):
+        args_set = set()
+
+        for logicnet in self.logic:
+            for arg in logicnet.args:
+                args_set.add(arg)
+        # for i in self.wirevector_set - args_set:
+        #     print(i.name)
+        #     print(444)
+        return self.wirevector_set - args_set
+
+    # 得到base_block中可以作为feature_block输入的信号
+    def __get_feature_possible_args(self):
+        from .wire import Input, Register
+        name2wire = dict()
+        for w in self.wirevector_set:
+            if w.identified and not isinstance(w, Input):
+                if isinstance(w, Register):
+                    w.args[0].id = w.id
+                    w.args[0].reg_input = True
+                    name2wire[w.args[0].id] = w.args[0]
+                else:
+                    name2wire[w.id] = w
+
+        return name2wire
 
 class PostSynthBlock(Block):
     """ This is a block with extra metadata required to maintain the
@@ -727,6 +1238,8 @@ def working_block(block=None):
     else:
         return block
 
+def current_block():
+    return _singleton_block
 
 def reset_working_block():
     """ Reset the working block to be empty. """
@@ -793,20 +1306,20 @@ def set_debug_mode(debug=True):
 _py_regex = '^[^\d\W]\w*\Z'
 
 
-class _NameIndexer(object):
-    """ Provides internal names that are based on a prefix and an index"""
-    def __init__(self, internal_prefix='_sani_temp'):
-        self.internal_prefix = internal_prefix
-        self.internal_index = 0
+# class _NameIndexer(object):
+#     """ Provides internal names that are based on a prefix and an index"""
+#     def __init__(self, internal_prefix='_sani_temp'):
+#         self.internal_prefix = internal_prefix
+#         self.internal_index = 0
 
-    def make_valid_string(self):
-        """Build a valid string based on the prefix and internal index"""
-        return self.internal_prefix + str(self.next_index())
+#     def make_valid_string(self):
+#         """Build a valid string based on the prefix and internal index"""
+#         return self.internal_prefix + str(self.next_index())
 
-    def next_index(self):
-        index = self.internal_index
-        self.internal_index += 1
-        return index
+#     def next_index(self):
+#         index = self.internal_index
+#         self.internal_index += 1
+#         return index
 
 
 class _NameSanitizer(_NameIndexer):

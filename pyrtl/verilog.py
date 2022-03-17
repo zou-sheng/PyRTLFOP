@@ -10,7 +10,7 @@ from __future__ import print_function, unicode_literals
 
 from .pyrtlexceptions import PyrtlError, PyrtlInternalError
 from .core import working_block, _NameSanitizer
-from .wire import WireVector, Input, Output, Const, Register
+from .wire import WireVector, Input, Output, Inout, Const, Register
 from .corecircuits import concat
 from .memory import RomBlock
 
@@ -21,20 +21,20 @@ from .memory import RomBlock
 #    \/  |___ |  \ | |___ \__/ \__>
 #
 
-def output_to_verilog(dest_file, block=None):
+def output_to_verilog(dest_file, block=None, module_name='toplevel'):
     """ A function to walk the block and output it in verilog format to the open file. """
-
     block = working_block(block)
+    # write by zousheng
+    block.change_inouts_to_wires()
     file = dest_file
-    internal_names = _VerilogSanitizer('_ver_out_tmp_')
+    internal_names = _VerilogSanitizer('_verout_tmp_')
 
     for wire in block.wirevector_set:
         internal_names.make_valid_string(wire.name)
 
     def varname(wire):
         return internal_names[wire.name]
-
-    _to_verilog_header(file, block, varname)
+    _to_verilog_header(file, block, varname, module_name)
     _to_verilog_combinational(file, block, varname)
     _to_verilog_sequential(file, block, varname)
     _to_verilog_memories(file, block, varname)
@@ -86,15 +86,16 @@ def _verilog_vector_decl(w):
 def _verilog_block_parts(block):
     inputs = block.wirevector_subset(Input)
     outputs = block.wirevector_subset(Output)
+    inouts = block.wirevector_subset(Inout)
     registers = block.wirevector_subset(Register)
-    wires = block.wirevector_subset() - (inputs | outputs | registers)
+    wires = block.wirevector_subset() - (inputs | outputs | registers | inouts)
     memories = {n.op_param[1] for n in block.logic_subset('m@')}
-    return inputs, outputs, registers, wires, memories
+    return inputs, outputs, inouts, registers, wires, memories
 
 
-def _to_verilog_header(file, block, varname):
+def _to_verilog_header(file, block, varname, module_name):
     """ Print the header of the verilog implementation. """
-
+   
     def name_sorted(wires):
         return sorted(wires, key=lambda w: varname(w))
 
@@ -105,21 +106,23 @@ def _to_verilog_header(file, block, varname):
     print('// As one initial test of synthesis, map to FPGA with:', file=file)
     print('//   yosys -p "synth_xilinx -top toplevel" thisfile.v\n', file=file)
 
-    inputs, outputs, registers, wires, memories = _verilog_block_parts(block)
-
+    inputs, outputs, inouts, registers, wires, memories = _verilog_block_parts(block)
+    
     # module name
     io_list = ['clk'] + name_list(name_sorted(inputs)) + name_list(name_sorted(outputs))
     if any(w.startswith('tmp') for w in io_list):
         raise PyrtlError('input or output with name starting with "tmp" indicates unnamed IO')
     io_list_str = ', '.join(io_list)
-    print('module toplevel({:s});'.format(io_list_str), file=file)
+    print('module {:s}({:s});'.format(module_name, io_list_str), file=file)
 
-    # inputs and outputs
+    # inputs and outputs and inouts
     print('    input clk;', file=file)
     for w in name_sorted(inputs):
         print('    input{:s} {:s};'.format(_verilog_vector_decl(w), varname(w)), file=file)
     for w in name_sorted(outputs):
         print('    output{:s} {:s};'.format(_verilog_vector_decl(w), varname(w)), file=file)
+    for w in name_sorted(inouts):
+        print('    inout{:s} {:s};'.format(_verilog_vector_decl(w), varname(w)), file=file)
     print('', file=file)
 
     # memories and registers
@@ -129,7 +132,10 @@ def _to_verilog_header(file, block, varname):
         print('    reg{:s} mem_{}{:s}; //{}'.format(memwidth_str, m.id,
                                                     memsize_str, m.name), file=file)
     for w in registers:
-        print('    reg{:s} {:s};'.format(_verilog_vector_decl(w), varname(w)), file=file)
+        if w.initial_value is not None:
+            print('    reg{:s} {:s} = {:s};'.format(_verilog_vector_decl(w), varname(w), str(w.initial_value)), file=file)
+        else:
+            print('    reg{:s} {:s};'.format(_verilog_vector_decl(w), varname(w)), file=file)
     print('', file=file)
 
     # wires
@@ -243,16 +249,14 @@ def _to_verilog_footer(file):
 #    |  |___ .__/  |  |__) |___ | \| \__, |  |
 #
 
-def output_verilog_testbench(dest_file, simulation_trace=None, toplevel_include=None,
-                             vcd="waveform.vcd", cmd=None, block=None):
-    """Output a Verilog testbench for the block/inputs used in the simulation trace.
+def output_verilog_testbench(dest_file, simulation_trace=None, vcd="waveform.vcd",
+                             cmd=None, block=None):
+    """Output a verilog testbanch for the block/inputs used in the simulation trace.
 
     :param dest_file: an open file to which the test bench will be printed.
     :param simulation_trace: a simulation trace from which the inputs will be extracted
         for inclusion in the test bench.  The test bench generated will just replay the
         inputs played to the simulation cycle by cycle.
-    :param toplevel_include: name of the file containing the toplevel module this testbench
-        is testing.  If not None, an '`include' directive will be added to the top.
     :param vcd: By default the testbench generator will include a command in the testbench
         to write the output of the testbench execution to a .vcd file (via $dumpfile), and
         this parameter is the string of the name of the file to use.  If None is specified
@@ -279,16 +283,11 @@ def output_verilog_testbench(dest_file, simulation_trace=None, toplevel_include=
     """
     block = working_block(block)
 
-    inputs, outputs, registers, wires, memories = _verilog_block_parts(block)
+    inputs, outputs, inouts, registers, wires, memories = _verilog_block_parts(block)
 
     ver_name = _VerilogSanitizer('_ver_out_tmp_')
     for wire in block.wirevector_set:
         ver_name.make_valid_string(wire.name)
-
-    # Output an include, if given
-    if toplevel_include:
-        print('`include "{:s}"'.format(toplevel_include), file=dest_file)
-        print('', file=dest_file)
 
     # Output header
     print('module tb();', file=dest_file)
@@ -304,6 +303,12 @@ def output_verilog_testbench(dest_file, simulation_trace=None, toplevel_include=
         print('    wire {:s} {:s};'.format(_verilog_vector_decl(w), ver_name[w.name]),
               file=dest_file)
     print('', file=dest_file)
+
+    # Declare all block inouts as wires
+    for w in inouts:
+        print('    wire {:s} {:s};'.format(_verilog_vector_decl(w), ver_name[w.name]),
+              file=dest_file)
+    print('', file=dest_file) 
 
     # Declare an integer used for init of memories
     print('    integer tb_iter;', file=dest_file)
